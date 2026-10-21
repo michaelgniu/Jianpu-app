@@ -7,6 +7,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl python3 python3-venv \
  && curl -fsSL -o /tmp/audiveris.deb \
       "https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/Audiveris-${AUDIVERIS_VERSION}-ubuntu24.04-x86_64.deb" \
+ && mkdir -p /usr/share/desktop-directories /usr/share/applications /usr/share/mime/packages \
  && apt-get install -y --no-install-recommends /tmp/audiveris.deb \
  && rm -rf /tmp/audiveris.deb /var/lib/apt/lists/*
 
