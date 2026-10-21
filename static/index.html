@@ -212,8 +212,16 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
     const lyricTexts = [...root.getElementsByTagName('lyric')].map(l => l.textContent);
     const han = lyricTexts.filter(t => /\p{Script=Han}/u.test(t)).length;
     const ident = kid(root, 'identification');
-    const comp = kids(ident, 'creator').find(c => c.getAttribute('type') === 'composer');
-    const lyr = kids(ident, 'creator').find(c => c.getAttribute('type') === 'lyricist');
+    // Recognisers may tag "作词 某某" as composer, so sort credits by their own prefix first.
+    let composer = '', lyricist = '';
+    for (const c of kids(ident, 'creator')) {
+      const t = c.textContent.trim();
+      if (!/\p{L}/u.test(t)) continue;
+      const m = t.match(/^(作词|词|作曲|曲)\s*[:：]?\s*(.+)$/);
+      if (m) { if (m[1].includes('词')) lyricist = lyricist || m[2]; else composer = composer || m[2]; }
+      else if (c.getAttribute('type') === 'lyricist') lyricist = lyricist || t;
+      else if (c.getAttribute('type') === 'composer') composer = composer || t;
+    }
     const names = {};
     for (const sp of kids(kid(root, 'part-list'), 'score-part')) names[sp.getAttribute('id')] = txt(sp, 'part-name') || txt(sp, 'part-abbreviation') || '';
     const parts = kids(root, 'part').map((el, i) => {
@@ -234,7 +242,7 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
     });
     if (!parts.length) throw new Error('乐谱里没有声部。');
     for (const p of parts) { p.ms = kids(p.el, 'measure'); p.starts = measureStarts(p.ms); }
-    const score = { title, composer: word(comp && comp.textContent), lyricist: word(lyr && lyr.textContent), parts, staves: regroupByStaff(parts), hanLyrics: han > lyricTexts.length / 2 };
+    const score = { title, composer, lyricist, parts, staves: regroupByStaff(parts), hanLyrics: han > lyricTexts.length / 2 };
     // One time signature for the whole score, so a nearly empty voice can't guess its own.
     const lens = new Map();
     parts.forEach((p, pi) => extract(sourceOf(score, 'p', pi), p.voices[0] ? p.voices[0].staff : '1', '1', score).measures
@@ -668,9 +676,10 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
     status.innerHTML = `<span class="error">${esc(msg)}</span>`;
   }
 
-  function load(xml, source) {
+  function load(xml, source, fallbackTitle) {
     try {
       const score = parseScore(xml);
+      if (!score.title && fallbackTitle) score.title = fallbackTitle;
       state.score = score; state.source = source;
       partSel.innerHTML = '';
       const addOpt = (parent, value, label) => {
@@ -766,7 +775,7 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
       const xml = scan ? await recognize(file) : await readFile(file);
       state.xml = xml; state.base = file.name.replace(/\.[^.]+$/, '');
       $('dl').hidden = !scan;
-      load(xml, (scan ? '识别自：' : '文件：') + file.name);
+      load(xml, (scan ? '识别自：' : '文件：') + file.name, state.base);
     } catch (e) { setError(e.message || String(e)); }
   }
 
