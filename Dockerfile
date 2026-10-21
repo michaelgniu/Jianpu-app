@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM --platform=linux/amd64 ubuntu:24.04
 
 ARG AUDIVERIS_VERSION=5.9.0
 ENV DEBIAN_FRONTEND=noninteractive

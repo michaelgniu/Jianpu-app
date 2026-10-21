@@ -5,14 +5,23 @@
 - 前端：`static/index.html`，单个页面，负责解析 MusicXML 并用 SVG 画出简谱（首调 1=X、高低八度点、减时线、增时线、附点、连音线、三连音、歌词、多声部切换）。
 - 后端：`app.py`（FastAPI），`POST /api/omr` 接收图片或 PDF，调用 [Audiveris](https://github.com/Audiveris/audiveris) 识谱，返回 MusicXML。
 
-## 用 Docker 运行
+## 在自己电脑上运行
 
-```bash
-docker build -t jianpu .
-docker run -p 8000:8000 jianpu
-```
+1. 安装 [Docker Desktop](https://www.docker.com/products/docker-desktop/)（Windows、Mac 都有），装好后打开它，等它显示正在运行。
+2. 在 GitHub 仓库页面点 **Code → Download ZIP**，下载后解压。
+3. 打开终端（Mac 用“终端”，Windows 用 PowerShell），进入解压后的文件夹，运行：
 
-然后打开 http://localhost:8000 。容器建议至少 2 GB 内存。
+   ```bash
+   docker build -t jianpu .
+   docker run -d --name jianpu -p 8000:8000 --restart unless-stopped jianpu
+   ```
+
+   第一次构建要下载约 200 MB，需要几分钟。
+4. 浏览器打开 http://localhost:8000 。
+
+以后要停止或重新启动：`docker stop jianpu`、`docker start jianpu`。加了 `--restart unless-stopped`，电脑重启后只要 Docker Desktop 在运行，它会自动启动。
+
+Docker Desktop 的内存设置建议不少于 2 GB。Apple 芯片（M1/M2/M3…）的 Mac 也能运行，Docker 会自动模拟 x86 环境，识谱会慢一些。
 
 ## 本地开发
 
