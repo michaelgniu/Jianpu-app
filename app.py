@@ -18,6 +18,8 @@ from fastapi.staticfiles import StaticFiles
 AUDIVERIS = os.environ.get("AUDIVERIS_BIN", "/opt/audiveris/bin/Audiveris")
 MAX_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "20")) * 1024 * 1024
 TIMEOUT = int(os.environ.get("OMR_TIMEOUT", "300"))
+# Languages for lyrics and titles (Tesseract codes joined with "+").
+OCR_LANGS = os.environ.get("OCR_LANGS", "chi_sim+eng")
 ALLOWED = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
 # Audiveris is memory hungry; run a limited number of jobs at once.
@@ -53,7 +55,9 @@ async def omr(file: UploadFile):
         out = work / "out"
         async with jobs:
             proc = await asyncio.create_subprocess_exec(
-                AUDIVERIS, "-batch", "-export", "-output", str(out), "--", str(src),
+                AUDIVERIS, "-batch",
+                "-constant", f"org.audiveris.omr.text.Language.defaultSpecification={OCR_LANGS}",
+                "-export", "-output", str(out), "--", str(src),
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
             )
             try:

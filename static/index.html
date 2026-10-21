@@ -293,7 +293,9 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
           const tm = kid(c, 'time-modification');
           const beam = kids(c, 'beam').find(b => (b.getAttribute('number') || '1') === '1');
           const lyEl = kids(c, 'lyric').find(l => (l.getAttribute('number') || '1') === '1') || kid(c, 'lyric');
-          const lyric = lyEl ? kids(lyEl, 'text').map(t => t.textContent).join('') : '';
+          // Scanned scores give OCR noise such as '|', '丨' or '=' in lyrics; keep only real words.
+          let lyric = lyEl ? kids(lyEl, 'text').map(t => t.textContent).join('').replace(/[|丨`'"=~^_\\]/g, '').trim() : '';
+          if (!/\p{L}/u.test(lyric)) lyric = '';
           if (lyric) hasLyrics = true;
           meas.items.push({
             rest: isRest, pitch, jp: pitch && !isRest ? toJianpu(pitch, key) : null, q, pos, measRest,
