@@ -151,7 +151,7 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
       <ul>
         <li>首调唱名：以调号的主音为 1，标作 1=D 等。</li>
         <li>四分音符为单个数字，八分、十六分音符加下划线，增时线写作“-”。</li>
-        <li>上加点为高八度，下加点为低八度，自动选择让多数音落在中音区的八度；临时升降号标在数字左上方。</li>
+        <li>上加点为高八度，下加点为低八度，每个声部自动选择让多数音落在中音区的八度；临时升降号标在数字左上方。</li>
         <li>和弦只取最高音；多声部乐谱请在“声部”里切换。</li>
       </ul>
     </div>
@@ -315,7 +315,7 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
         parts[pi].voices.forEach(v => voices.add(v.voice));
       }
       const best = [...weight.entries()].sort((x, y) => y[1] - x[1])[0];
-      staves.push({ map, name: `第${k + 1}行谱` + (best ? `（${best[0]}）` : ''), voices: [...voices].sort((x, y) => +x - +y) });
+      staves.push({ map, name: `第${k + 1}行谱` + (best ? `（${best[0]}）` : ''), short: best ? best[0].slice(0, 4) : '', voices: [...voices].sort((x, y) => +x - +y) });
     }
     return staves;
   }
@@ -460,20 +460,21 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
         else group = 's' + (++gid);
       } else group = 'b' + Math.floor(it.pos / meas.beatLen + 1e-6);
       const base = it.rest ? { num: 0, acc: 0, oct: 0 } : { num: it.jp.num, acc: it.jp.acc, oct: it.jp.oct + octShift };
-      const g = (lines, dot, first) => ({ kind: 'g', ...base, lines, dot, group, item: first ? it : null });
+      // t is the onset in quarters, used to line up several parts beat by beat.
+      const g = (lines, dot, first, t) => ({ kind: 'g', ...base, lines, dot, group, item: first ? it : null, t });
       const n = it.q;
       if (it.measRest) {
         const k = Math.max(1, Math.round(n / meas.beatLen));
-        for (let i = 0; i < k; i++) toks.push(g(meas.beatLen < 1 ? 1 : 0, meas.beatLen === 1.5, i === 0));
+        for (let i = 0; i < k; i++) toks.push(g(meas.beatLen < 1 ? 1 : 0, meas.beatLen === 1.5, i === 0, it.pos + i * meas.beatLen));
       } else if (n >= 1 - 1e-6) {
         const k = Math.floor(n + 1e-6), frac = n - k;
-        toks.push(g(0, frac > 0.4 && frac < 0.6, true));
-        for (let i = 1; i < k; i++) toks.push(it.rest ? g(0, false, false) : { kind: 'dash' });
+        toks.push(g(0, frac > 0.4 && frac < 0.6, true, it.pos));
+        for (let i = 1; i < k; i++) toks.push(it.rest ? g(0, false, false, it.pos + i) : { kind: 'dash', t: it.pos + i });
       } else if (n > 0) {
         let l = 1;
         while (2 ** -l > n + 1e-6 && l < 4) l++;
         const dot = Math.abs(n - 2 ** -l * 1.5) < 1e-6;
-        toks.push(g(l, dot, true));
+        toks.push(g(l, dot, true, it.pos));
       }
     }
     return toks;
@@ -489,15 +490,30 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
     return e;
   }
 
-  function draw(score, data, opts, width) {
+  // rows: [{ data, name, octShift }]; one row for a single part, several for a choir score.
+  function draw(score, rows, opts, width) {
+    const multi = rows.length > 1;
     const MX = width < 520 ? 14 : 36;
-    const avail = width - MX * 2;
-    const ms = data.measures.map((m, i) => {
-      const toks = measureTokens(m, opts.octShift);
+    const LABEL = multi ? (width < 520 ? 30 : 40) : 0;
+    const X0 = MX + LABEL;
+    const avail = width - X0 - MX;
+    const count = Math.max(...rows.map(r => r.data.measures.length));
+    const ms = [];
+    for (let i = 0; i < count; i++) {
+      const toks = rows.map(r => r.data.measures[i] ? measureTokens(r.data.measures[i], r.octShift) : []);
+      // One column per onset shared by all rows, as wide as its widest token.
+      const colW = new Map();
+      for (const row of toks) for (const t of row) {
+        const key = Math.round(t.t * 1000);
+        colW.set(key, Math.max(colW.get(key) || 0, tokW(t)));
+      }
+      const colX = new Map();
       let x = PADL;
-      for (const t of toks) { t.rx = x; x += tokW(t); }
-      return { m, toks, w: Math.max(44, x + PADR), idx: i };
-    });
+      for (const key of [...colW.keys()].sort((a, b) => a - b)) { colX.set(key, x); x += colW.get(key); }
+      for (const row of toks) for (const t of row) t.rx = colX.get(Math.round(t.t * 1000));
+      const m = (rows.find(r => r.data.measures[i]) || rows[0]).data.measures[i];
+      ms.push({ m, toks, w: Math.max(44, x + PADR), idx: i });
+    }
     // Break into lines.
     const lines = [];
     let cur = [], curW = 0;
@@ -509,13 +525,15 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
     if (cur.length) lines.push(cur);
 
     const headerH = 104;
-    const lineH = data.hasLyrics ? 112 : 84;
+    const rowH = rows.map(r => 64 + (r.data.hasLyrics ? 28 : 0));
+    const lineH = rowH.reduce((a, b) => a + b, 0) + (multi ? 26 : 20);
     const H = headerH + lines.length * lineH + 24;
     const svg = el('svg', { xmlns: SVGNS, width, height: H, viewBox: `0 0 ${width} ${H}`, fill: 'currentColor', role: 'img', 'aria-label': (score.title || '乐谱') + ' 简谱' });
 
     // Header
+    const data0 = rows[0].data;
     if (score.title) svg.append(el('text', { x: width / 2, y: 44, 'text-anchor': 'middle', class: 'jp-title' }, score.title));
-    const k = data.firstKey, t = data.firstTime;
+    const k = data0.firstKey, t = data0.firstTime;
     svg.append(el('text', { x: MX, y: 82, class: 'jp-meta' }, '1=' + keyName(k)));
     const tx = MX + 52;
     svg.append(el('text', { x: tx, y: 74, 'text-anchor': 'middle', class: 'jp-meta' }, t.beats));
@@ -526,68 +544,74 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
 
     const pos = new Map();
     const lineInfo = [];
-    const total = ms.length;
     lines.forEach((line, li) => {
-      const B = headerH + li * lineH + 50;
+      const top = headerH + li * lineH;
       const natural = line.reduce((s, m) => s + m.w, 0);
       const isLast = li === lines.length - 1;
       const scale = isLast && natural < avail * 0.8 ? Math.min(1.25, avail / natural) : avail / natural;
-      let x = MX;
-      lineInfo.push({ B, x0: MX, x1: MX + natural * scale });
+      lineInfo.push({ x0: X0, x1: X0 + natural * scale });
+      let rowTop = top;
+      const baselines = rowH.map(h => { const B = rowTop + 46; rowTop += h; return B; });
+      if (multi) {
+        svg.append(el('rect', { x: X0 - 6, y: baselines[0] - 26, width: 2.4, height: baselines[baselines.length - 1] - baselines[0] + 36 }));
+        rows.forEach((r, ri) => svg.append(el('text', { x: MX, y: baselines[ri] - 6, class: 'jp-small' }, r.name)));
+      }
+      let x = X0;
       for (const mm of line) {
         const mStart = x;
-        const glyphs = [];
-        // key / time change marker
+        x = mStart + mm.w * scale;
         const marks = [];
         if (mm.m.keyChange) marks.push('1=' + keyName(mm.m.keyChange));
         if (mm.m.timeChange) marks.push(mm.m.timeChange.beats + '/' + mm.m.timeChange.beatType);
-        if (marks.length) svg.append(el('text', { x: mStart + 6, y: B - 44, class: 'jp-meta' }, marks.join('  ')));
-        for (const tk of mm.toks) {
-          const ax = mStart + tk.rx * scale;
-          if (tk.kind === 'dash') {
-            svg.append(el('rect', { x: ax + 4, y: B - 8, width: GW - 8, height: 1.6 }));
-            continue;
+        if (marks.length) svg.append(el('text', { x: mStart + 6, y: baselines[0] - 40, class: 'jp-meta' }, marks.join('  ')));
+        rows.forEach((row, ri) => {
+          const B = baselines[ri];
+          const glyphs = [];
+          for (const tk of mm.toks[ri]) {
+            const ax = mStart + tk.rx * scale;
+            if (tk.kind === 'dash') {
+              svg.append(el('rect', { x: ax + 4, y: B - 8, width: GW - 8, height: 1.6 }));
+              continue;
+            }
+            const left = ax + (tk.acc ? ACCW : 0);
+            const cx = left + GW / 2;
+            if (tk.acc) svg.append(el('text', { x: ax + 4, y: B - 11, 'text-anchor': 'middle', class: 'jp-acc' }, tk.acc > 0 ? '♯'.repeat(tk.acc) : '♭'.repeat(-tk.acc)));
+            svg.append(el('text', { x: cx, y: B, 'text-anchor': 'middle', class: 'jp-num' }, String(tk.num)));
+            if (tk.dot) svg.append(el('circle', { cx: left + GW + 2, cy: B - 7, r: 1.9 }));
+            for (let i = 0; i < tk.oct; i++) svg.append(el('circle', { cx, cy: B - 22 - i * 6, r: 1.9 }));
+            for (let i = 0; i < -tk.oct; i++) svg.append(el('circle', { cx, cy: B + 8 + tk.lines * 4 + i * 6, r: 1.9 }));
+            glyphs.push({ left: left + 1, right: left + GW + (tk.dot ? DOTW : 0) - 2, lines: tk.lines, group: tk.group });
+            if (tk.item) {
+              pos.set(tk.item, { li, cx, oct: Math.max(0, tk.oct), B });
+              if (tk.item.lyric) svg.append(el('text', { x: cx, y: B + 40, 'text-anchor': 'middle', class: 'jp-lyric' }, tk.item.lyric));
+            }
           }
-          const left = ax + (tk.acc ? ACCW : 0);
-          const cx = left + GW / 2;
-          if (tk.acc) svg.append(el('text', { x: ax + 4, y: B - 11, 'text-anchor': 'middle', class: 'jp-acc' }, tk.acc > 0 ? '♯'.repeat(tk.acc) : '♭'.repeat(-tk.acc)));
-          svg.append(el('text', { x: cx, y: B, 'text-anchor': 'middle', class: 'jp-num' }, String(tk.num)));
-          if (tk.dot) svg.append(el('circle', { cx: left + GW + 2, cy: B - 7, r: 1.9 }));
-          for (let i = 0; i < tk.oct; i++) svg.append(el('circle', { cx, cy: B - 22 - i * 6, r: 1.9 }));
-          for (let i = 0; i < -tk.oct; i++) svg.append(el('circle', { cx, cy: B + 8 + tk.lines * 4 + i * 6, r: 1.9 }));
-          const g = { left: left + 1, right: left + GW + (tk.dot ? DOTW : 0) - 2, lines: tk.lines, group: tk.group };
-          glyphs.push(g);
-          if (tk.item) {
-            pos.set(tk.item, { li, cx, oct: Math.max(0, tk.oct) });
-            if (tk.item.lyric) svg.append(el('text', { x: cx, y: B + 42, 'text-anchor': 'middle', class: 'jp-lyric' }, tk.item.lyric));
+          // underlines (减时线), joined within a beam or beat
+          for (let L = 1; L <= 4; L++) {
+            let run = null;
+            const flush = () => { if (run) svg.append(el('rect', { x: run.a, y: B + 4 + (L - 1) * 4, width: Math.max(4, run.b - run.a), height: 1.5 })); run = null; };
+            for (const g of glyphs) {
+              if (g.lines >= L) {
+                if (run && run.group === g.group) run.b = g.right;
+                else { flush(); run = { a: g.left, b: g.right, group: g.group }; }
+              } else flush();
+            }
+            flush();
           }
-        }
-        // underlines (减时线), joined within a beam or beat
-        for (let L = 1; L <= 4; L++) {
-          let run = null;
-          const flush = () => { if (run) svg.append(el('rect', { x: run.a, y: B + 4 + (L - 1) * 4, width: Math.max(4, run.b - run.a), height: 1.5 })); run = null; };
-          for (const g of glyphs) {
-            if (g.lines >= L) {
-              if (run && run.group === g.group) run.b = g.right;
-              else { flush(); run = { a: g.left, b: g.right, group: g.group }; }
-            } else flush();
-          }
-          flush();
-        }
-        x = mStart + mm.w * scale;
-        // barlines
-        const top = B - 24, bot = B + 8;
-        const thin = xx => svg.append(el('rect', { x: xx - 0.6, y: top, width: 1.2, height: bot - top }));
-        const thick = xx => svg.append(el('rect', { x: xx - 1.6, y: top, width: 3.2, height: bot - top }));
-        const dots = xx => { svg.append(el('circle', { cx: xx, cy: B - 14, r: 1.9 })); svg.append(el('circle', { cx: xx, cy: B - 2, r: 1.9 })); };
-        const bl = mm.m.barLeft;
-        if (bl && bl.repeat === 'forward') { thick(mStart + 2); thin(mStart + 6); dots(mStart + 10); }
-        const br = mm.m.barRight;
-        const isEnd = mm.idx === total - 1;
-        if (br && br.repeat === 'backward') { dots(x - 10); thin(x - 6); thick(x - 2); }
-        else if ((br && br.style === 'light-heavy') || isEnd) { thin(x - 6); thick(x - 1.6); }
-        else if (br && br.style === 'light-light') { thin(x - 4); thin(x); }
-        else thin(x);
+          // barlines
+          const y0 = B - 24, y1 = B + 8;
+          const thin = xx => svg.append(el('rect', { x: xx - 0.6, y: y0, width: 1.2, height: y1 - y0 }));
+          const thick = xx => svg.append(el('rect', { x: xx - 1.6, y: y0, width: 3.2, height: y1 - y0 }));
+          const dots = xx => { svg.append(el('circle', { cx: xx, cy: B - 14, r: 1.9 })); svg.append(el('circle', { cx: xx, cy: B - 2, r: 1.9 })); };
+          const bl = mm.m.barLeft;
+          if (bl && bl.repeat === 'forward') { thick(mStart + 2); thin(mStart + 6); dots(mStart + 10); }
+          const br = mm.m.barRight;
+          const isEnd = mm.idx === count - 1;
+          if (br && br.repeat === 'backward') { dots(x - 10); thin(x - 6); thick(x - 2); }
+          else if ((br && br.style === 'light-heavy') || isEnd) { thin(x - 6); thick(x - 1.6); }
+          else if (br && br.style === 'light-light') { thin(x - 4); thin(x); }
+          else thin(x);
+        });
       }
     });
 
@@ -595,7 +619,7 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
     const arc = (a, b) => {
       const pa = pos.get(a), pb = pos.get(b);
       if (!pa || !pb) return;
-      const ya = lineInfo[pa.li].B - 26 - pa.oct * 6, yb = lineInfo[pb.li].B - 26 - pb.oct * 6;
+      const ya = pa.B - 26 - pa.oct * 6, yb = pb.B - 26 - pb.oct * 6;
       const path = (x1, y1, x2, y2) => {
         const lift = Math.min(12, 5 + Math.abs(x2 - x1) * 0.08);
         svg.append(el('path', { d: `M${x1} ${y1} Q${(x1 + x2) / 2} ${Math.min(y1, y2) - lift} ${x2} ${y2}`, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.2 }));
@@ -603,27 +627,29 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
       if (pa.li === pb.li) path(pa.cx + 2, ya, pb.cx - 2, yb);
       else { path(pa.cx + 2, ya, lineInfo[pa.li].x1, ya - 4); path(lineInfo[pb.li].x0, yb - 4, pb.cx - 2, yb); }
     };
-    let pendingTie = null;
-    const openSlurs = {};
-    let tupOpen = null;
-    for (const m of data.measures) for (const it of m.items) {
-      if (it.rest) { if (it.tuplet === 'start') tupOpen = it; }
-      else {
-        if (it.tieStop && pendingTie) { arc(pendingTie, it); pendingTie = null; }
-        if (it.tieStart) pendingTie = it;
-        for (const s of it.slurs) {
-          if (s.type === 'start') openSlurs[s.n] = it;
-          else if (s.type === 'stop' && openSlurs[s.n]) { arc(openSlurs[s.n], it); delete openSlurs[s.n]; }
+    for (const { data } of rows) {
+      let pendingTie = null;
+      const openSlurs = {};
+      let tupOpen = null;
+      for (const m of data.measures) for (const it of m.items) {
+        if (it.rest) { if (it.tuplet === 'start') tupOpen = it; }
+        else {
+          if (it.tieStop && pendingTie) { arc(pendingTie, it); pendingTie = null; }
+          if (it.tieStart) pendingTie = it;
+          for (const s of it.slurs) {
+            if (s.type === 'start') openSlurs[s.n] = it;
+            else if (s.type === 'stop' && openSlurs[s.n]) { arc(openSlurs[s.n], it); delete openSlurs[s.n]; }
+          }
+          if (it.tuplet === 'start') tupOpen = it;
         }
-        if (it.tuplet === 'start') tupOpen = it;
-      }
-      if (it.tuplet === 'stop' && tupOpen) {
-        const pa = pos.get(tupOpen), pb = pos.get(it);
-        if (pa && pb && pa.li === pb.li) {
-          const y = lineInfo[pa.li].B - 36 - Math.max(pa.oct, pb.oct) * 6;
-          svg.append(el('text', { x: (pa.cx + pb.cx) / 2, y, 'text-anchor': 'middle', class: 'jp-small' }, it.tupletN));
+        if (it.tuplet === 'stop' && tupOpen) {
+          const pa = pos.get(tupOpen), pb = pos.get(it);
+          if (pa && pb && pa.li === pb.li) {
+            const y = pa.B - 36 - Math.max(pa.oct, pb.oct) * 6;
+            svg.append(el('text', { x: (pa.cx + pb.cx) / 2, y, 'text-anchor': 'middle', class: 'jp-small' }, it.tupletN));
+          }
+          tupOpen = null;
         }
-        tupOpen = null;
       }
     }
     return svg;
@@ -682,17 +708,20 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
       if (!score.title && fallbackTitle) score.title = fallbackTitle;
       state.score = score; state.source = source;
       partSel.innerHTML = '';
-      const addOpt = (parent, value, label) => {
+      const addOpt = (parent, value, label, short) => {
         const o = document.createElement('option');
         o.value = value; o.textContent = label;
+        if (short) o.dataset.short = short;
         parent.append(o);
       };
+      const multiLine = (score.staves ? score.staves.length : score.parts.length) > 1;
+      if (multiLine) addOpt(partSel, 'all', '全部声部（排在一起）');
       let byPart = partSel;
       if (score.staves) {
         const g1 = document.createElement('optgroup');
         g1.label = '按谱表位置（推荐）';
         score.staves.forEach((st, k) => st.voices.forEach(v =>
-          addOpt(g1, `s|${k}|1|${v}`, st.name + (st.voices.length > 1 ? ` 声部${v}` : ''))));
+          addOpt(g1, `s|${k}|1|${v}`, st.name + (st.voices.length > 1 ? ` 声部${v}` : ''), (st.short || `第${k + 1}行`) + (v !== '1' ? `·${v}` : ''))));
         byPart = document.createElement('optgroup');
         byPart.label = '按识别出的声部';
         partSel.append(g1, byPart);
@@ -701,7 +730,8 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
         const vs = p.voices.length ? p.voices : [{ staff: '1', voice: '1' }];
         const multiStaff = new Set(vs.map(v => v.staff)).size > 1;
         vs.forEach(v => addOpt(byPart, `p|${pi}|${v.staff}|${v.voice}`,
-          p.name + (vs.length > 1 ? `（${multiStaff ? `第${v.staff}行 ` : ''}声部${v.voice}）` : '')));
+          p.name + (vs.length > 1 ? `（${multiStaff ? `第${v.staff}行 ` : ''}声部${v.voice}）` : ''),
+          p.name.slice(0, 4) + (vs.length > 1 ? `·${v.voice}` : '')));
       });
       render();
     } catch (e) {
@@ -711,18 +741,26 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
 
   function render() {
     if (!state.score) return;
-    const [kind, idx, staff, voice] = partSel.value.split('|');
-    const data = extract(sourceOf(state.score, kind, +idx), staff, voice, state.score);
-    // Pick the octave that puts the most notes in the middle register (fewest dots).
-    const octs = data.measures.flatMap(m => m.items.filter(it => it.jp).map(it => it.jp.oct));
-    let auto = 0, bestCost = Infinity;
-    for (const sh of [0, -1, 1, -2, 2]) {
-      const cost = octs.reduce((c, o) => c + Math.abs(o + sh), 0);
-      if (cost < bestCost) { bestCost = cost; auto = sh; }
-    }
-    const opts = { octShift: auto + +$('oct').value, per: +$('per').value };
+    // "all" stacks every line of the recommended group (or every part) like a choir score.
+    const picks = partSel.value === 'all'
+      ? [...partSel.querySelectorAll('option')].filter(o => o.value !== 'all' && (!state.score.staves || o.value.startsWith('s|')))
+      : [partSel.selectedOptions[0]];
+    const rows = picks.map(o => {
+      const [kind, idx, staff, voice] = o.value.split('|');
+      const data = extract(sourceOf(state.score, kind, +idx), staff, voice, state.score);
+      // Pick the octave that puts most of this part's notes in the middle register (fewest dots).
+      const octs = data.measures.flatMap(m => m.items.filter(it => it.jp).map(it => it.jp.oct));
+      let auto = 0, bestCost = Infinity;
+      for (const sh of [0, -1, 1, -2, 2]) {
+        const cost = octs.reduce((c, oc) => c + Math.abs(oc + sh), 0);
+        if (cost < bestCost) { bestCost = cost; auto = sh; }
+      }
+      return { data, name: o.dataset.short || o.textContent, octShift: auto + +$('oct').value };
+    });
+    const data = rows[0].data;
+    const opts = { per: +$('per').value };
     const width = Math.max(320, sheet.clientWidth);
-    sheet.replaceChildren(draw(state.score, data, opts, width));
+    sheet.replaceChildren(draw(state.score, rows, opts, width));
     const t = data.firstTime;
     status.innerHTML =
       `<span class="chip">调号 <b>1=${esc(keyName(data.firstKey))}</b></span>` +
