@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>五线谱转简谱</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@500;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+/* Layout: one column. A control strip on top, then the score sheet as a white page that fills the width. */
+:root {
+  --bg: #eceff3;
+  --surface: #f8f9fb;
+  --ink: #1b2430;
+  --muted: #5b6878;
+  --line: #d3d9e0;
+  --accent: #1f5b8f;
+  --accent-soft: #dfe9f3;
+  --danger: #a3401b;
+  --sheet: #ffffff;
+  --sheet-ink: #151b23;
+  --sheet-soft: #6b7684;
+  --f-display: "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --f-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --f-num: "Noto Serif SC", Georgia, "Times New Roman", serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151a; --surface: #181e25; --ink: #e3e8ee; --muted: #95a1af; --line: #2b343f;
+    --accent: #84b6e3; --accent-soft: #1c2a39; --danger: #e59a76;
+    --sheet: #1c2229; --sheet-ink: #eaeef3; --sheet-soft: #9aa5b2;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151a; --surface: #181e25; --ink: #e3e8ee; --muted: #95a1af; --line: #2b343f;
+  --accent: #84b6e3; --accent-soft: #1c2a39; --danger: #e59a76;
+  --sheet: #1c2229; --sheet-ink: #eaeef3; --sheet-soft: #9aa5b2;
+  color-scheme: dark;
+}
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--f-body); line-height: 1.6; }
+.wrap {
+  max-width: 1080px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 48px;
+  display: grid; gap: 18px;
+}
+header h1 { font-family: var(--f-display); font-weight: 700; font-size: 1.75rem; margin: 0; letter-spacing: .02em; text-wrap: balance; }
+header p { margin: 4px 0 0; color: var(--muted); }
+.controls {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: stretch;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px;
+}
+.drop {
+  flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; justify-content: center;
+  border: 1.5px dashed var(--line); border-radius: 8px; padding: 10px 14px; cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.drop:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.drop strong { color: var(--accent); font-weight: 500; }
+.drop span { color: var(--muted); font-size: 12.5px; }
+.drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field label { font-size: 12px; color: var(--muted); letter-spacing: .04em; }
+select, button {
+  font: inherit; font-size: 14px; color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
+}
+select { max-width: 260px; }
+button { cursor: pointer; align-self: end; }
+button:hover { border-color: var(--accent); color: var(--accent); }
+select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.status { display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; color: var(--muted); align-items: center; }
+.chip { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.chip b { font-weight: 500; color: var(--accent); }
+.error { color: var(--danger); }
+.sheet {
+  background: var(--sheet); color: var(--sheet-ink); border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 30px rgba(20,40,70,.08);
+  overflow-x: auto; min-height: 200px;
+}
+.sheet svg { display: block; }
+.jp-num { font-family: var(--f-num); font-size: 22px; font-weight: 500; }
+.jp-acc { font-family: var(--f-num); font-size: 13px; }
+.jp-lyric { font-family: var(--f-body); font-size: 14px; fill: var(--sheet-soft); }
+.jp-title { font-family: var(--f-display); font-size: 24px; font-weight: 700; }
+.jp-meta { font-family: var(--f-body); font-size: 14px; }
+.jp-small { font-family: var(--f-num); font-size: 12px; fill: var(--sheet-soft); }
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; color: var(--muted); font-size: 13.5px; }
+.notes h2 { font-family: var(--f-display); font-size: 1rem; color: var(--ink); margin: 0 0 4px; }
+.notes p, .notes ul { margin: 0; max-width: 65ch; }
+.notes ul { padding-left: 1.2em; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <h1>五线谱转简谱</h1>
+    <p>上传五线谱图片、PDF 或 MusicXML，按首调自动生成简谱。</p>
+  </header>
+
+  <section class="controls" aria-label="转换设置">
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept=".musicxml,.xml,.mxl,.pdf,.png,.jpg,.jpeg,.tif,.tiff">
+      <strong>选择乐谱文件</strong>
+      <span>或把文件拖到这里。支持乐谱图片（.png、.jpg）、PDF，以及 MusicXML（.musicxml、.xml、.mxl）</span>
+    </label>
+    <div class="field">
+      <label for="part">声部</label>
+      <select id="part"></select>
+    </div>
+    <div class="field">
+      <label for="oct">八度</label>
+      <select id="oct">
+        <option value="1">整体高一个八度</option>
+        <option value="0" selected>自动</option>
+        <option value="-1">整体低一个八度</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="per">每行小节</label>
+      <select id="per">
+        <option value="0">自动</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4" selected>4</option>
+        <option value="5">5</option>
+        <option value="6">6</option>
+      </select>
+    </div>
+    <button id="sample" type="button">载入示例</button>
+    <button id="dl" type="button" hidden>下载 MusicXML</button>
+  </section>
+
+  <div class="status" id="status" aria-live="polite"></div>
+  <div class="sheet" id="sheet"></div>
+
+  <section class="notes">
+    <div>
+      <h2>上传什么文件</h2>
+      <p>在 MuseScore、Sibelius、Finale、Dorico 里打开乐谱，选择“导出 → MusicXML”。MuseScore 网站上的乐谱也可以下载成 MusicXML。图片和 PDF 会先经过自动识谱（Audiveris），印刷清晰、拍摄端正的乐谱识别效果最好；手写谱暂时识别不了。识别结果可能有个别错音，请对照原谱检查。</p>
+    </div>
+    <div>
+      <h2>转换规则</h2>
+      <ul>
+        <li>首调唱名：以调号的主音为 1，标作 1=D 等。</li>
+        <li>四分音符为单个数字，八分、十六分音符加下划线，增时线写作“-”。</li>
+        <li>上加点为高八度，下加点为低八度；临时升降号标在数字左上方。</li>
+        <li>和弦只取最高音；多声部乐谱请在“声部”里切换。</li>
+      </ul>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const STEP_IDX = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
+  const STEP_PC = [0, 2, 4, 5, 7, 9, 11];
+  const LETTERS = 'CDEFGAB';
+  const TYPEQ = { breve: 8, whole: 4, half: 2, quarter: 1, eighth: 0.5, '16th': 0.25, '32nd': 0.125, '64th': 0.0625 };
+
+  const kid = (el, n) => { if (!el) return null; for (const c of el.children) if (c.localName === n) return c; return null; };
+  const kids = (el, n) => el ? [...el.children].filter(c => c.localName === n) : [];
+  const txt = (el, n) => { const k = kid(el, n); return k ? k.textContent.trim() : null; };
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  // Major-key tonic for a key signature: letter index and alteration.
+  function keyTonic(fifths) {
+    const li = ((fifths * 4) % 7 + 7) % 7;
+    const pc = ((fifths * 7) % 12 + 12) % 12;
+    let alt = pc - STEP_PC[li];
+    if (alt > 6) alt -= 12;
+    if (alt < -6) alt += 12;
+    return { li, alt, fifths };
+  }
+  function keyName(k) {
+    return (k.alt > 0 ? '♯'.repeat(k.alt) : k.alt < 0 ? '♭'.repeat(-k.alt) : '') + LETTERS[k.li];
+  }
+
+  function toJianpu(p, key) {
+    const si = STEP_IDX[p.step];
+    const deg = ((si - key.li) % 7 + 7) % 7;
+    const tonicPc = STEP_PC[key.li] + key.alt;
+    const expected = tonicPc + STEP_PC[deg];
+    const actual = STEP_PC[si] + p.alter;
+    let acc = ((actual - expected) % 12 + 12) % 12;
+    if (acc > 6) acc -= 12;
+    // Middle octave starts at the tonic nearest middle C (C4..G4, or A3/B3).
+    const tonicOct = key.li <= 4 ? 4 : 3;
+    const diff = (p.octave * 7 + si) - (tonicOct * 7 + key.li);
+    return { num: deg + 1, acc, oct: Math.floor(diff / 7) };
+  }
+  const midi = p => (p.octave + 1) * 12 + STEP_PC[STEP_IDX[p.step]] + p.alter;
+
+  function parseScore(xml) {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length) throw new Error('文件不是有效的 XML，请确认导出的是 MusicXML。');
+    const root = doc.documentElement;
+    if (root.localName === 'score-timewise') throw new Error('暂不支持 timewise 格式的 MusicXML，请在软件里重新导出为普通 MusicXML。');
+    if (root.localName !== 'score-partwise') throw new Error('没有找到乐谱内容，请确认这是 MusicXML 文件。');
+    const title = txt(kid(root, 'work'), 'work-title') || txt(root, 'movement-title') || '';
+    const ident = kid(root, 'identification');
+    const comp = kids(ident, 'creator').find(c => c.getAttribute('type') === 'composer');
+    const lyr = kids(ident, 'creator').find(c => c.getAttribute('type') === 'lyricist');
+    const names = {};
+    for (const sp of kids(kid(root, 'part-list'), 'score-part')) names[sp.getAttribute('id')] = txt(sp, 'part-name') || txt(sp, 'part-abbreviation') || '';
+    const parts = kids(root, 'part').map((el, i) => {
+      const combos = new Map();
+      for (const n of el.getElementsByTagName('note')) {
+        if (kid(n, 'grace') || kid(n, 'chord') || kid(n, 'cue')) continue;
+        const s = txt(n, 'staff') || '1', v = txt(n, 'voice') || '1';
+        const k = s + '|' + v;
+        if (!combos.has(k)) combos.set(k, { staff: s, voice: v, count: 0 });
+        combos.get(k).count++;
+      }
+      const voices = [...combos.values()].sort((a, b) => (+a.staff - +b.staff) || (+a.voice - +b.voice));
+      return { el, name: names[el.getAttribute('id')] || ('声部 ' + (i + 1)), voices };
+    });
+    if (!parts.length) throw new Error('乐谱里没有声部。');
+    return { title, composer: comp ? comp.textContent.trim() : '', lyricist: lyr ? lyr.textContent.trim() : '', parts };
+  }
+
+  function extract(part, staff, voice) {
+    let divisions = 1, key = keyTonic(0), beats = 4, beatType = 4;
+    let firstKey = null, firstTime = null;
+    const measures = [];
+    let hasLyrics = false;
+    for (const m of kids(part.el, 'measure')) {
+      const meas = { items: [], keyChange: null, timeChange: null, barLeft: null, barRight: null };
+      let pos = 0;
+      for (const c of m.children) {
+        const name = c.localName;
+        if (name === 'attributes') {
+          const d = txt(c, 'divisions');
+          if (d) divisions = +d || 1;
+          const k = kid(c, 'key');
+          if (k && txt(k, 'fifths') != null) {
+            const nk = keyTonic(+txt(k, 'fifths'));
+            if (!firstKey) firstKey = nk;
+            else if (nk.fifths !== key.fifths) meas.keyChange = nk;
+            key = nk;
+          }
+          const t = kid(c, 'time');
+          if (t && txt(t, 'beats')) {
+            const nb = txt(t, 'beats'), nt = +txt(t, 'beat-type') || 4;
+            if (!firstTime) firstTime = { beats: nb, beatType: nt };
+            else if (nb !== String(beats) || nt !== beatType) meas.timeChange = { beats: nb, beatType: nt };
+            beats = nb; beatType = nt;
+          }
+        } else if (name === 'barline') {
+          const loc = c.getAttribute('location') || 'right';
+          const rep = kid(c, 'repeat');
+          const b = { style: txt(c, 'bar-style'), repeat: rep ? rep.getAttribute('direction') : null };
+          if (loc === 'left') meas.barLeft = b; else if (loc === 'right') meas.barRight = b;
+        } else if (name === 'forward') {
+          const v = txt(c, 'voice'), s = txt(c, 'staff') || '1';
+          if (v === voice && s === staff) {
+            const q = (+txt(c, 'duration') || 0) / divisions;
+            meas.items.push({ rest: true, q, pos, measRest: false, key });
+            pos += q;
+          }
+        } else if (name === 'note') {
+          if (kid(c, 'grace') || kid(c, 'cue')) continue;
+          if ((txt(c, 'voice') || '1') !== voice || (txt(c, 'staff') || '1') !== staff) continue;
+          const dur = (+txt(c, 'duration') || 0) / divisions;
+          const restEl = kid(c, 'rest');
+          const pEl = kid(c, 'pitch');
+          const pitch = pEl ? { step: txt(pEl, 'step'), alter: Math.round(+(txt(pEl, 'alter') || 0)), octave: +txt(pEl, 'octave') } : null;
+          if (kid(c, 'chord')) {
+            const prev = meas.items[meas.items.length - 1];
+            if (prev && prev.pitch && pitch && midi(pitch) > midi(prev.pitch)) { prev.pitch = pitch; prev.jp = toJianpu(pitch, key); }
+            continue;
+          }
+          const type = txt(c, 'type');
+          const dots = kids(c, 'dot').length;
+          let q = type && TYPEQ[type] ? TYPEQ[type] * (2 - 1 / 2 ** dots) : dur;
+          const isRest = !!restEl || !pitch;
+          let measRest = false;
+          if (restEl && (restEl.getAttribute('measure') === 'yes' || !type)) { q = dur; measRest = true; }
+          const notations = kid(c, 'notations');
+          const tied = kids(notations, 'tied').map(t => t.getAttribute('type'));
+          const ties = kids(c, 'tie').map(t => t.getAttribute('type'));
+          const allTies = tied.length ? tied : ties;
+          const slurs = kids(notations, 'slur').map(s => ({ type: s.getAttribute('type'), n: s.getAttribute('number') || '1' }));
+          const tup = kid(notations, 'tuplet');
+          const tm = kid(c, 'time-modification');
+          const beam = kids(c, 'beam').find(b => (b.getAttribute('number') || '1') === '1');
+          const lyEl = kids(c, 'lyric').find(l => (l.getAttribute('number') || '1') === '1') || kid(c, 'lyric');
+          const lyric = lyEl ? kids(lyEl, 'text').map(t => t.textContent).join('') : '';
+          if (lyric) hasLyrics = true;
+          meas.items.push({
+            rest: isRest, pitch, jp: pitch && !isRest ? toJianpu(pitch, key) : null, q, pos, measRest,
+            tieStart: allTies.includes('start'), tieStop: allTies.includes('stop'), slurs,
+            tuplet: tup ? tup.getAttribute('type') : null, tupletN: tm ? txt(tm, 'actual-notes') : '3',
+            beam: beam ? beam.textContent.trim() : null, lyric
+          });
+          pos += dur;
+        }
+      }
+      meas.beatLen = (String(beatType) === '8' && +beats % 3 === 0) ? 1.5 : 4 / beatType;
+      measures.push(meas);
+    }
+    return { measures, firstKey: firstKey || keyTonic(0), firstTime: firstTime || { beats: '4', beatType: 4 }, hasLyrics };
+  }
+
+  // Turn one measure into drawable tokens: glyphs (a digit) and dashes (增时线).
+  function measureTokens(meas, octShift) {
+    const toks = [];
+    const useBeams = meas.items.some(i => i.beam);
+    let gid = 0, beamGroup = null;
+    for (const it of meas.items) {
+      let group;
+      if (useBeams) {
+        if (it.beam === 'begin') { beamGroup = 'm' + (++gid); group = beamGroup; }
+        else if ((it.beam === 'continue' || it.beam === 'end') && beamGroup) { group = beamGroup; if (it.beam === 'end') beamGroup = null; }
+        else group = 's' + (++gid);
+      } else group = 'b' + Math.floor(it.pos / meas.beatLen + 1e-6);
+      const base = it.rest ? { num: 0, acc: 0, oct: 0 } : { num: it.jp.num, acc: it.jp.acc, oct: it.jp.oct + octShift };
+      const g = (lines, dot, first) => ({ kind: 'g', ...base, lines, dot, group, item: first ? it : null });
+      const n = it.q;
+      if (it.measRest) {
+        const k = Math.max(1, Math.round(n / meas.beatLen));
+        for (let i = 0; i < k; i++) toks.push(g(meas.beatLen < 1 ? 1 : 0, meas.beatLen === 1.5, i === 0));
+      } else if (n >= 1 - 1e-6) {
+        const k = Math.floor(n + 1e-6), frac = n - k;
+        toks.push(g(0, frac > 0.4 && frac < 0.6, true));
+        for (let i = 1; i < k; i++) toks.push(it.rest ? g(0, false, false) : { kind: 'dash' });
+      } else if (n > 0) {
+        let l = 1;
+        while (2 ** -l > n + 1e-6 && l < 4) l++;
+        const dot = Math.abs(n - 2 ** -l * 1.5) < 1e-6;
+        toks.push(g(l, dot, true));
+      }
+    }
+    return toks;
+  }
+
+  const GW = 20, ACCW = 9, DOTW = 9, GAP = 11, PADL = 12, PADR = 4;
+  const tokW = t => t.kind === 'dash' ? GW + GAP : (t.acc ? ACCW : 0) + GW + (t.dot ? DOTW : 0) + GAP;
+
+  function el(name, attrs, text) {
+    const e = document.createElementNS(SVGNS, name);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function draw(score, data, opts, width) {
+    const MX = width < 520 ? 14 : 36;
+    const avail = width - MX * 2;
+    const ms = data.measures.map((m, i) => {
+      const toks = measureTokens(m, opts.octShift);
+      let x = PADL;
+      for (const t of toks) { t.rx = x; x += tokW(t); }
+      return { m, toks, w: Math.max(44, x + PADR), idx: i };
+    });
+    // Break into lines.
+    const lines = [];
+    let cur = [], curW = 0;
+    for (const mm of ms) {
+      const full = (opts.per && cur.length >= opts.per) || (cur.length && curW + mm.w > avail);
+      if (full) { lines.push(cur); cur = []; curW = 0; }
+      cur.push(mm); curW += mm.w;
+    }
+    if (cur.length) lines.push(cur);
+
+    const headerH = 104;
+    const lineH = data.hasLyrics ? 112 : 84;
+    const H = headerH + lines.length * lineH + 24;
+    const svg = el('svg', { xmlns: SVGNS, width, height: H, viewBox: `0 0 ${width} ${H}`, fill: 'currentColor', role: 'img', 'aria-label': (score.title || '乐谱') + ' 简谱' });
+
+    // Header
+    if (score.title) svg.append(el('text', { x: width / 2, y: 44, 'text-anchor': 'middle', class: 'jp-title' }, score.title));
+    const k = data.firstKey, t = data.firstTime;
+    svg.append(el('text', { x: MX, y: 82, class: 'jp-meta' }, '1=' + keyName(k)));
+    const tx = MX + 52;
+    svg.append(el('text', { x: tx, y: 74, 'text-anchor': 'middle', class: 'jp-meta' }, t.beats));
+    svg.append(el('line', { x1: tx - 7, x2: tx + 7, y1: 78, y2: 78, stroke: 'currentColor', 'stroke-width': 1 }));
+    svg.append(el('text', { x: tx, y: 92, 'text-anchor': 'middle', class: 'jp-meta' }, t.beatType));
+    const credits = [score.lyricist && ('词 ' + score.lyricist), score.composer && ('曲 ' + score.composer)].filter(Boolean);
+    credits.forEach((c, i) => svg.append(el('text', { x: width - MX, y: 74 + i * 18, 'text-anchor': 'end', class: 'jp-meta' }, c)));
+
+    const pos = new Map();
+    const lineInfo = [];
+    const total = ms.length;
+    lines.forEach((line, li) => {
+      const B = headerH + li * lineH + 50;
+      const natural = line.reduce((s, m) => s + m.w, 0);
+      const isLast = li === lines.length - 1;
+      const scale = isLast && natural < avail * 0.8 ? Math.min(1.25, avail / natural) : avail / natural;
+      let x = MX;
+      lineInfo.push({ B, x0: MX, x1: MX + natural * scale });
+      for (const mm of line) {
+        const mStart = x;
+        const glyphs = [];
+        // key / time change marker
+        const marks = [];
+        if (mm.m.keyChange) marks.push('1=' + keyName(mm.m.keyChange));
+        if (mm.m.timeChange) marks.push(mm.m.timeChange.beats + '/' + mm.m.timeChange.beatType);
+        if (marks.length) svg.append(el('text', { x: mStart + 6, y: B - 44, class: 'jp-meta' }, marks.join('  ')));
+        for (const tk of mm.toks) {
+          const ax = mStart + tk.rx * scale;
+          if (tk.kind === 'dash') {
+            svg.append(el('rect', { x: ax + 4, y: B - 8, width: GW - 8, height: 1.6 }));
+            continue;
+          }
+          const left = ax + (tk.acc ? ACCW : 0);
+          const cx = left + GW / 2;
+          if (tk.acc) svg.append(el('text', { x: ax + 4, y: B - 11, 'text-anchor': 'middle', class: 'jp-acc' }, tk.acc > 0 ? '♯'.repeat(tk.acc) : '♭'.repeat(-tk.acc)));
+          svg.append(el('text', { x: cx, y: B, 'text-anchor': 'middle', class: 'jp-num' }, String(tk.num)));
+          if (tk.dot) svg.append(el('circle', { cx: left + GW + 2, cy: B - 7, r: 1.9 }));
+          for (let i = 0; i < tk.oct; i++) svg.append(el('circle', { cx, cy: B - 22 - i * 6, r: 1.9 }));
+          for (let i = 0; i < -tk.oct; i++) svg.append(el('circle', { cx, cy: B + 8 + tk.lines * 4 + i * 6, r: 1.9 }));
+          const g = { left: left + 1, right: left + GW + (tk.dot ? DOTW : 0) - 2, lines: tk.lines, group: tk.group };
+          glyphs.push(g);
+          if (tk.item) {
+            pos.set(tk.item, { li, cx, oct: Math.max(0, tk.oct) });
+            if (tk.item.lyric) svg.append(el('text', { x: cx, y: B + 42, 'text-anchor': 'middle', class: 'jp-lyric' }, tk.item.lyric));
+          }
+        }
+        // underlines (减时线), joined within a beam or beat
+        for (let L = 1; L <= 4; L++) {
+          let run = null;
+          const flush = () => { if (run) svg.append(el('rect', { x: run.a, y: B + 4 + (L - 1) * 4, width: Math.max(4, run.b - run.a), height: 1.5 })); run = null; };
+          for (const g of glyphs) {
+            if (g.lines >= L) {
+              if (run && run.group === g.group) run.b = g.right;
+              else { flush(); run = { a: g.left, b: g.right, group: g.group }; }
+            } else flush();
+          }
+          flush();
+        }
+        x = mStart + mm.w * scale;
+        // barlines
+        const top = B - 24, bot = B + 8;
+        const thin = xx => svg.append(el('rect', { x: xx - 0.6, y: top, width: 1.2, height: bot - top }));
+        const thick = xx => svg.append(el('rect', { x: xx - 1.6, y: top, width: 3.2, height: bot - top }));
+        const dots = xx => { svg.append(el('circle', { cx: xx, cy: B - 14, r: 1.9 })); svg.append(el('circle', { cx: xx, cy: B - 2, r: 1.9 })); };
+        const bl = mm.m.barLeft;
+        if (bl && bl.repeat === 'forward') { thick(mStart + 2); thin(mStart + 6); dots(mStart + 10); }
+        const br = mm.m.barRight;
+        const isEnd = mm.idx === total - 1;
+        if (br && br.repeat === 'backward') { dots(x - 10); thin(x - 6); thick(x - 2); }
+        else if ((br && br.style === 'light-heavy') || isEnd) { thin(x - 6); thick(x - 1.6); }
+        else if (br && br.style === 'light-light') { thin(x - 4); thin(x); }
+        else thin(x);
+      }
+    });
+
+    // ties, slurs and tuplets
+    const arc = (a, b) => {
+      const pa = pos.get(a), pb = pos.get(b);
+      if (!pa || !pb) return;
+      const ya = lineInfo[pa.li].B - 26 - pa.oct * 6, yb = lineInfo[pb.li].B - 26 - pb.oct * 6;
+      const path = (x1, y1, x2, y2) => {
+        const lift = Math.min(12, 5 + Math.abs(x2 - x1) * 0.08);
+        svg.append(el('path', { d: `M${x1} ${y1} Q${(x1 + x2) / 2} ${Math.min(y1, y2) - lift} ${x2} ${y2}`, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.2 }));
+      };
+      if (pa.li === pb.li) path(pa.cx + 2, ya, pb.cx - 2, yb);
+      else { path(pa.cx + 2, ya, lineInfo[pa.li].x1, ya - 4); path(lineInfo[pb.li].x0, yb - 4, pb.cx - 2, yb); }
+    };
+    let pendingTie = null;
+    const openSlurs = {};
+    let tupOpen = null;
+    for (const m of data.measures) for (const it of m.items) {
+      if (it.rest) { if (it.tuplet === 'start') tupOpen = it; }
+      else {
+        if (it.tieStop && pendingTie) { arc(pendingTie, it); pendingTie = null; }
+        if (it.tieStart) pendingTie = it;
+        for (const s of it.slurs) {
+          if (s.type === 'start') openSlurs[s.n] = it;
+          else if (s.type === 'stop' && openSlurs[s.n]) { arc(openSlurs[s.n], it); delete openSlurs[s.n]; }
+        }
+        if (it.tuplet === 'start') tupOpen = it;
+      }
+      if (it.tuplet === 'stop' && tupOpen) {
+        const pa = pos.get(tupOpen), pb = pos.get(it);
+        if (pa && pb && pa.li === pb.li) {
+          const y = lineInfo[pa.li].B - 36 - Math.max(pa.oct, pb.oct) * 6;
+          svg.append(el('text', { x: (pa.cx + pb.cx) / 2, y, 'text-anchor': 'middle', class: 'jp-small' }, it.tupletN));
+        }
+        tupOpen = null;
+      }
+    }
+    return svg;
+  }
+
+  // ---- Sample: Beethoven, "Ode to Joy" (public domain), D major ----
+  function sampleXml() {
+    const M = [
+      'F#4q F#4q G4q A4q / Freu de schö ner', 'A4q G4q F#4q E4q / Göt ter fun ken',
+      'D4q D4q E4q F#4q / Toch ter aus E', 'F#4dq E4e E4h / ly si um,',
+      'F#4q F#4q G4q A4q / Wir be tre ten', 'A4q G4q F#4q E4q / feu er trun ken,',
+      'D4q D4q E4q F#4q / Himm li sche, dein', 'E4dq D4e D4h / Hei lig tum!',
+      'E4q E4q F#4q D4q / Dei ne Zau ber', 'E4q F#4e G4e F#4q D4q / bin den _ wie der,',
+      'E4q F#4e G4e F#4q E4q / was die _ Mo de', 'D4q E4q A3h / streng ge teilt;',
+      'F#4q F#4q G4q A4q / Al le Men schen', 'A4q G4q F#4q E4q / wer den Brü der,',
+      'D4q D4q E4q F#4q / wo dein sanf ter', 'E4dq D4e D4h / Flü gel weilt.'
+    ];
+    const T = { q: ['quarter', 2, 0], h: ['half', 4, 0], dq: ['quarter', 3, 1], e: ['eighth', 1, 0] };
+    let out = '<?xml version="1.0" encoding="UTF-8"?><score-partwise version="3.1"><work><work-title>欢乐颂</work-title></work>' +
+      '<identification><creator type="composer">贝多芬</creator><creator type="lyricist">席勒</creator></identification>' +
+      '<part-list><score-part id="P1"><part-name>旋律</part-name></score-part></part-list><part id="P1">';
+    M.forEach((line, i) => {
+      const [ns, ls] = line.split(' / ');
+      const notes = ns.split(' ').map(s => s.match(/^([A-G])(#|b)?(\d)(dq|q|h|e)$/));
+      const lyr = ls.split(' ');
+      out += `<measure number="${i + 1}">`;
+      if (i === 0) out += '<attributes><divisions>2</divisions><key><fifths>2</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>';
+      notes.forEach((n, j) => {
+        const [, step, acc, oct, t] = n;
+        const [type, dur, dot] = T[t];
+        const prevE = j > 0 && notes[j - 1][4] === 'e', nextE = j < notes.length - 1 && notes[j + 1][4] === 'e';
+        const beam = t === 'e' ? (nextE && !prevE ? 'begin' : prevE ? 'end' : '') : '';
+        out += `<note><pitch><step>${step}</step>${acc ? `<alter>${acc === '#' ? 1 : -1}</alter>` : ''}<octave>${oct}</octave></pitch>` +
+          `<duration>${dur}</duration><voice>1</voice><type>${type}</type>${dot ? '<dot/>' : ''}` +
+          (beam ? `<beam number="1">${beam}</beam>` : '') +
+          (lyr[j] && lyr[j] !== '_' ? `<lyric number="1"><text>${esc(lyr[j])}</text></lyric>` : '') + '</note>';
+      });
+      if (i === M.length - 1) out += '<barline location="right"><bar-style>light-heavy</bar-style></barline>';
+      out += '</measure>';
+    });
+    return out + '</part></score-partwise>';
+  }
+
+  // ---- UI ----
+  const $ = id => document.getElementById(id);
+  const sheet = $('sheet'), status = $('status'), partSel = $('part');
+  const state = { score: null, source: '' };
+
+  function setError(msg) {
+    status.innerHTML = `<span class="error">${esc(msg)}</span>`;
+  }
+
+  function load(xml, source) {
+    try {
+      const score = parseScore(xml);
+      state.score = score; state.source = source;
+      partSel.innerHTML = '';
+      score.parts.forEach((p, pi) => {
+        const vs = p.voices.length ? p.voices : [{ staff: '1', voice: '1' }];
+        const multiStaff = new Set(vs.map(v => v.staff)).size > 1;
+        vs.forEach(v => {
+          const o = document.createElement('option');
+          o.value = `${pi}|${v.staff}|${v.voice}`;
+          o.textContent = p.name + (vs.length > 1 ? `（${multiStaff ? `第${v.staff}行 ` : ''}声部${v.voice}）` : '');
+          partSel.append(o);
+        });
+      });
+      render();
+    } catch (e) {
+      setError(e.message || String(e));
+    }
+  }
+
+  function render() {
+    if (!state.score) return;
+    const [pi, staff, voice] = partSel.value.split('|');
+    const part = state.score.parts[+pi];
+    const data = extract(part, staff, voice);
+    const opts = { octShift: +$('oct').value, per: +$('per').value };
+    const width = Math.max(320, sheet.clientWidth);
+    sheet.replaceChildren(draw(state.score, data, opts, width));
+    const t = data.firstTime;
+    status.innerHTML =
+      `<span class="chip">调号 <b>1=${esc(keyName(data.firstKey))}</b></span>` +
+      `<span class="chip">拍号 <b>${esc(t.beats)}/${esc(t.beatType)}</b></span>` +
+      `<span class="chip">小节 <b>${data.measures.length}</b></span>` +
+      `<span>${esc(state.source)}</span>`;
+  }
+
+  async function readFile(file) {
+    const buf = await file.arrayBuffer();
+    const u8 = new Uint8Array(buf);
+    if (u8[0] === 0x50 && u8[1] === 0x4b) {
+      if (!window.JSZip) throw new Error('解压 .mxl 的组件没有加载成功，请改用未压缩的 .musicxml 文件。');
+      const zip = await JSZip.loadAsync(buf);
+      let path = null;
+      const c = zip.file('META-INF/container.xml');
+      if (c) {
+        const cx = new DOMParser().parseFromString(await c.async('string'), 'application/xml');
+        const rf = cx.getElementsByTagName('rootfile')[0];
+        path = rf && rf.getAttribute('full-path');
+      }
+      if (!path || !zip.file(path)) path = Object.keys(zip.files).find(n => /\.(xml|musicxml)$/i.test(n) && !n.startsWith('META-INF'));
+      if (!path) throw new Error('.mxl 压缩包里没有找到乐谱文件。');
+      return zip.file(path).async('string');
+    }
+    if (u8[0] === 0xff && u8[1] === 0xfe) return new TextDecoder('utf-16le').decode(u8);
+    if (u8[0] === 0xfe && u8[1] === 0xff) return new TextDecoder('utf-16be').decode(u8);
+    return new TextDecoder('utf-8').decode(u8);
+  }
+
+  const isScan = f => /\.(pdf|png|jpe?g|tiff?)$/i.test(f.name) || /^(image\/|application\/pdf)/.test(f.type);
+
+  async function recognize(file) {
+    const body = new FormData();
+    body.append('file', file);
+    const res = await fetch('api/omr', { method: 'POST', body });
+    if (!res.ok) {
+      let msg = '识谱失败（' + res.status + '）。';
+      try { msg = (await res.json()).detail || msg; } catch (e) {}
+      throw new Error(msg);
+    }
+    return res.text();
+  }
+
+  async function handleFile(file) {
+    if (!file) return;
+    const scan = isScan(file);
+    status.textContent = scan ? '正在识别 ' + file.name + ' 里的五线谱，大约需要 10 到 60 秒…' : '正在读取 ' + file.name + ' …';
+    try {
+      const xml = scan ? await recognize(file) : await readFile(file);
+      state.xml = xml; state.base = file.name.replace(/\.[^.]+$/, '');
+      $('dl').hidden = !scan;
+      load(xml, (scan ? '识别自：' : '文件：') + file.name);
+    } catch (e) { setError(e.message || String(e)); }
+  }
+
+  $('dl').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([state.xml], { type: 'application/xml' }));
+    a.download = (state.base || 'score') + '.musicxml';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+
+  $('file').addEventListener('change', e => handleFile(e.target.files[0]));
+  const drop = $('drop');
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); handleFile(e.dataTransfer.files[0]); });
+  partSel.addEventListener('change', render);
+  $('oct').addEventListener('change', render);
+  $('per').addEventListener('change', render);
+  $('sample').addEventListener('click', () => ($('dl').hidden = true, load(sampleXml(), '示例：贝多芬《欢乐颂》')));
+
+  let lastW = 0, timer = null;
+  new ResizeObserver(() => {
+    const w = sheet.clientWidth;
+    if (Math.abs(w - lastW) < 2) return;
+    lastW = w;
+    clearTimeout(timer);
+    timer = setTimeout(render, 80);
+  }).observe(sheet);
+
+  load(sampleXml(), '示例：贝多芬《欢乐颂》');
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(render);
+})();
+</script>
+</body>
+</html>
