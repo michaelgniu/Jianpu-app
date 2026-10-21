@@ -425,6 +425,8 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
           pos += dur;
         }
       }
+      // A measure the recogniser left empty reads as a whole-measure rest.
+      if (!meas.items.length) meas.items.push({ rest: true, q: 0, pos: 0, measRest: true, placeholder: true, slurs: [] });
       meas.len = pos;
       meas.beats = beats; meas.beatType = beatType;
       measures.push(meas);
