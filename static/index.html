@@ -151,7 +151,7 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
       <ul>
         <li>首调唱名：以调号的主音为 1，标作 1=D 等。</li>
         <li>四分音符为单个数字，八分、十六分音符加下划线，增时线写作“-”。</li>
-        <li>上加点为高八度，下加点为低八度；临时升降号标在数字左上方。</li>
+        <li>上加点为高八度，下加点为低八度，自动选择让多数音落在中音区的八度；临时升降号标在数字左上方。</li>
         <li>和弦只取最高音；多声部乐谱请在“声部”里切换。</li>
       </ul>
     </div>
@@ -224,17 +224,111 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
       return { el, name: names[el.getAttribute('id')] || ('声部 ' + (i + 1)), voices };
     });
     if (!parts.length) throw new Error('乐谱里没有声部。');
-    return { title, composer: comp ? comp.textContent.trim() : '', lyricist: lyr ? lyr.textContent.trim() : '', parts };
+    for (const p of parts) { p.ms = kids(p.el, 'measure'); p.starts = measureStarts(p.ms); }
+    return { title, composer: comp ? comp.textContent.trim() : '', lyricist: lyr ? lyr.textContent.trim() : '', parts, staves: regroupByStaff(parts) };
   }
 
-  function extract(part, staff, voice) {
+  // State (divisions, key, time) in force at the start of each measure of a part.
+  function measureStarts(ms) {
+    let st = { divisions: 1, key: null, time: null };
+    return ms.map(m => {
+      const start = st;
+      for (const a of kids(m, 'attributes')) {
+        st = { ...st };
+        const d = txt(a, 'divisions');
+        if (d) st.divisions = +d || 1;
+        const k = kid(a, 'key');
+        if (k && txt(k, 'fifths') != null) st.key = keyTonic(+txt(k, 'fifths'));
+        const t = kid(a, 'time');
+        if (t && txt(t, 'beats')) st.time = { beats: txt(t, 'beats'), beatType: +txt(t, 'beat-type') || 4 };
+      }
+      return start;
+    });
+  }
+
+  const GENERIC_NAME = /^(voice|声部\s*\d*|part\s*\d*|staff\s*\d*|)$/i;
+
+  // Scanned scores often label staves differently from one system to the next
+  // (e.g. 女高 on the first line, S. afterwards), so the recogniser splits one
+  // singer's line across several parts. Rebuild the lines by staff position:
+  // in every system, the parts that are present, in order, are staves 1, 2, 3…
+  // A part counts as absent from a system when it holds nothing but rests there.
+  function regroupByStaff(parts) {
+    if (parts.length < 2) return null;
+    const n = Math.min(...parts.map(p => p.ms.length));
+    const starts = [0];
+    for (let i = 1; i < n; i++) {
+      const pr = kid(parts[0].ms[i], 'print');
+      if (pr && (pr.getAttribute('new-system') === 'yes' || pr.getAttribute('new-page') === 'yes')) starts.push(i);
+    }
+    if (starts.length < 2) return null;
+    const present = (p, a, b) => {
+      for (let i = a; i < b; i++) {
+        const notes = p.ms[i].getElementsByTagName('note');
+        if (!notes.length) return true;
+        for (const nt of notes) if (kid(nt, 'pitch') || kid(nt, 'unpitched')) return true;
+      }
+      return false;
+    };
+    const systems = starts.map((a, j) => {
+      const b = j + 1 < starts.length ? starts[j + 1] : n;
+      return { a, b, list: parts.map((p, pi) => present(p, a, b) ? pi : -1).filter(pi => pi >= 0) };
+    });
+    const identity = systems.every(sy => sy.list.length === parts.length);
+    if (identity) return null;
+    const count = Math.max(...systems.map(sy => sy.list.length));
+    const staves = [];
+    for (let k = 0; k < count; k++) {
+      const map = new Array(n).fill(-1);
+      const weight = new Map();
+      const voices = new Set(['1']);
+      for (const sy of systems) {
+        const pi = sy.list[k];
+        if (pi == null) continue;
+        for (let i = sy.a; i < sy.b; i++) map[i] = pi;
+        const nm = parts[pi].name.trim();
+        if (!GENERIC_NAME.test(nm)) weight.set(nm, (weight.get(nm) || 0) + sy.b - sy.a);
+        parts[pi].voices.forEach(v => voices.add(v.voice));
+      }
+      const best = [...weight.entries()].sort((x, y) => y[1] - x[1])[0];
+      staves.push({ map, name: `第${k + 1}行谱` + (best ? `（${best[0]}）` : ''), voices: [...voices].sort((x, y) => +x - +y) });
+    }
+    return staves;
+  }
+
+  function sourceOf(score, kind, idx) {
+    if (kind === 's') {
+      const st = score.staves[idx];
+      return st.map.map((pi, i) => pi < 0 ? { m: null, start: null } : { m: score.parts[pi].ms[i], start: score.parts[pi].starts[i] });
+    }
+    const p = score.parts[idx];
+    return p.ms.map((m, i) => ({ m, start: p.starts[i] }));
+  }
+
+  function extract(source, staff, voice) {
     let divisions = 1, key = keyTonic(0), beats = 4, beatType = 4;
     let firstKey = null, firstTime = null;
     const measures = [];
     let hasLyrics = false;
-    for (const m of kids(part.el, 'measure')) {
+    for (const { m, start } of source) {
       const meas = { items: [], keyChange: null, timeChange: null, barLeft: null, barRight: null };
       let pos = 0;
+      if (!m) {
+        // This staff is missing from the current system: a whole-measure rest, sized below.
+        meas.items.push({ rest: true, q: 0, pos: 0, measRest: true, placeholder: true, slurs: [] });
+        meas.len = 0;
+        measures.push(meas);
+        continue;
+      }
+      if (start) {
+        divisions = start.divisions;
+        if (start.key) {
+          if (!firstKey) firstKey = start.key;
+          else if (start.key.fifths !== key.fifths) meas.keyChange = start.key;
+          key = start.key;
+        }
+        if (start.time && !firstTime) { firstTime = start.time; beats = start.time.beats; beatType = start.time.beatType; }
+      }
       for (const c of m.children) {
         const name = c.localName;
         if (name === 'attributes') {
@@ -306,10 +400,26 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
           pos += dur;
         }
       }
-      meas.beatLen = (String(beatType) === '8' && +beats % 3 === 0) ? 1.5 : 4 / beatType;
+      meas.len = pos;
+      meas.beats = beats; meas.beatType = beatType;
       measures.push(meas);
     }
-    return { measures, firstKey: firstKey || keyTonic(0), firstTime: firstTime || { beats: '4', beatType: 4 }, hasLyrics };
+    // Scans often lose the time signature: take the most common measure length instead.
+    const lens = new Map();
+    for (const ms of measures) if (ms.len > 0) { const l = Math.round(ms.len * 8) / 8; lens.set(l, (lens.get(l) || 0) + 1); }
+    const common = [...lens.entries()].sort((a, b) => b[1] - a[1])[0];
+    const usual = common ? common[0] : 4;
+    let inferred = false;
+    if (!firstTime) {
+      inferred = true;
+      firstTime = Number.isInteger(usual) ? { beats: String(usual), beatType: 4 } : { beats: String(usual * 2), beatType: 8 };
+      for (const ms of measures) { ms.beats = firstTime.beats; ms.beatType = firstTime.beatType; }
+    }
+    for (const ms of measures) {
+      ms.beatLen = (String(ms.beatType) === '8' && +ms.beats % 3 === 0) ? 1.5 : 4 / ms.beatType;
+      for (const it of ms.items) if (it.placeholder) it.q = (+ms.beats * 4) / ms.beatType;
+    }
+    return { measures, firstKey: firstKey || keyTonic(0), firstTime, inferredTime: inferred, hasLyrics };
   }
 
   // Turn one measure into drawable tokens: glyphs (a digit) and dashes (增时线).
@@ -546,15 +656,26 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
       const score = parseScore(xml);
       state.score = score; state.source = source;
       partSel.innerHTML = '';
+      const addOpt = (parent, value, label) => {
+        const o = document.createElement('option');
+        o.value = value; o.textContent = label;
+        parent.append(o);
+      };
+      let byPart = partSel;
+      if (score.staves) {
+        const g1 = document.createElement('optgroup');
+        g1.label = '按谱表位置（推荐）';
+        score.staves.forEach((st, k) => st.voices.forEach(v =>
+          addOpt(g1, `s|${k}|1|${v}`, st.name + (st.voices.length > 1 ? ` 声部${v}` : ''))));
+        byPart = document.createElement('optgroup');
+        byPart.label = '按识别出的声部';
+        partSel.append(g1, byPart);
+      }
       score.parts.forEach((p, pi) => {
         const vs = p.voices.length ? p.voices : [{ staff: '1', voice: '1' }];
         const multiStaff = new Set(vs.map(v => v.staff)).size > 1;
-        vs.forEach(v => {
-          const o = document.createElement('option');
-          o.value = `${pi}|${v.staff}|${v.voice}`;
-          o.textContent = p.name + (vs.length > 1 ? `（${multiStaff ? `第${v.staff}行 ` : ''}声部${v.voice}）` : '');
-          partSel.append(o);
-        });
+        vs.forEach(v => addOpt(byPart, `p|${pi}|${v.staff}|${v.voice}`,
+          p.name + (vs.length > 1 ? `（${multiStaff ? `第${v.staff}行 ` : ''}声部${v.voice}）` : '')));
       });
       render();
     } catch (e) {
@@ -564,16 +685,22 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
 
   function render() {
     if (!state.score) return;
-    const [pi, staff, voice] = partSel.value.split('|');
-    const part = state.score.parts[+pi];
-    const data = extract(part, staff, voice);
-    const opts = { octShift: +$('oct').value, per: +$('per').value };
+    const [kind, idx, staff, voice] = partSel.value.split('|');
+    const data = extract(sourceOf(state.score, kind, +idx), staff, voice);
+    // Pick the octave that puts the most notes in the middle register (fewest dots).
+    const octs = data.measures.flatMap(m => m.items.filter(it => it.jp).map(it => it.jp.oct));
+    let auto = 0, bestCost = Infinity;
+    for (const sh of [0, -1, 1, -2, 2]) {
+      const cost = octs.reduce((c, o) => c + Math.abs(o + sh), 0);
+      if (cost < bestCost) { bestCost = cost; auto = sh; }
+    }
+    const opts = { octShift: auto + +$('oct').value, per: +$('per').value };
     const width = Math.max(320, sheet.clientWidth);
     sheet.replaceChildren(draw(state.score, data, opts, width));
     const t = data.firstTime;
     status.innerHTML =
       `<span class="chip">调号 <b>1=${esc(keyName(data.firstKey))}</b></span>` +
-      `<span class="chip">拍号 <b>${esc(t.beats)}/${esc(t.beatType)}</b></span>` +
+      `<span class="chip">拍号 <b>${esc(t.beats)}/${esc(t.beatType)}</b>${data.inferredTime ? '（按小节长度推断）' : ''}</span>` +
       `<span class="chip">小节 <b>${data.measures.length}</b></span>` +
       `<span>${esc(state.source)}</span>`;
   }
