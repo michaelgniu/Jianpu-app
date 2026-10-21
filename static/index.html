@@ -205,7 +205,12 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
     const root = doc.documentElement;
     if (root.localName === 'score-timewise') throw new Error('暂不支持 timewise 格式的 MusicXML，请在软件里重新导出为普通 MusicXML。');
     if (root.localName !== 'score-partwise') throw new Error('没有找到乐谱内容，请确认这是 MusicXML 文件。');
-    const title = txt(kid(root, 'work'), 'work-title') || txt(root, 'movement-title') || '';
+    // OCR'd credits can be bare symbols like '|16' or '2/4'; keep only real words.
+    const word = v => (v && /\p{L}/u.test(v) ? v.trim() : '');
+    const title = word(txt(kid(root, 'work'), 'work-title')) || word(txt(root, 'movement-title'));
+    // When the lyrics are mostly Chinese, Latin-letter lyrics in a scan are OCR noise.
+    const lyricTexts = [...root.getElementsByTagName('lyric')].map(l => l.textContent);
+    const han = lyricTexts.filter(t => /\p{Script=Han}/u.test(t)).length;
     const ident = kid(root, 'identification');
     const comp = kids(ident, 'creator').find(c => c.getAttribute('type') === 'composer');
     const lyr = kids(ident, 'creator').find(c => c.getAttribute('type') === 'lyricist');
@@ -220,12 +225,23 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
         if (!combos.has(k)) combos.set(k, { staff: s, voice: v, count: 0 });
         combos.get(k).count++;
       }
-      const voices = [...combos.values()].sort((a, b) => (+a.staff - +b.staff) || (+a.voice - +b.voice));
+      // Drop stray voices the recogniser invents for a handful of notes.
+      const total = [...combos.values()].reduce((t, c) => t + c.count, 0);
+      const voices = [...combos.values()]
+        .filter(c => c.voice === '1' || c.count >= Math.max(8, total * 0.1))
+        .sort((a, b) => (+a.staff - +b.staff) || (+a.voice - +b.voice));
       return { el, name: names[el.getAttribute('id')] || ('声部 ' + (i + 1)), voices };
     });
     if (!parts.length) throw new Error('乐谱里没有声部。');
     for (const p of parts) { p.ms = kids(p.el, 'measure'); p.starts = measureStarts(p.ms); }
-    return { title, composer: comp ? comp.textContent.trim() : '', lyricist: lyr ? lyr.textContent.trim() : '', parts, staves: regroupByStaff(parts) };
+    const score = { title, composer: word(comp && comp.textContent), lyricist: word(lyr && lyr.textContent), parts, staves: regroupByStaff(parts), hanLyrics: han > lyricTexts.length / 2 };
+    // One time signature for the whole score, so a nearly empty voice can't guess its own.
+    const lens = new Map();
+    parts.forEach((p, pi) => extract(sourceOf(score, 'p', pi), p.voices[0] ? p.voices[0].staff : '1', '1', score).measures
+      .forEach(m => { if (m.len > 0) { const l = Math.round(m.len * 8) / 8; lens.set(l, (lens.get(l) || 0) + 1); } }));
+    const common = [...lens.entries()].sort((a, b) => b[1] - a[1])[0];
+    score.usualLen = common ? common[0] : 4;
+    return score;
   }
 
   // State (divisions, key, time) in force at the start of each measure of a part.
@@ -305,7 +321,7 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
     return p.ms.map((m, i) => ({ m, start: p.starts[i] }));
   }
 
-  function extract(source, staff, voice) {
+  function extract(source, staff, voice, score) {
     let divisions = 1, key = keyTonic(0), beats = 4, beatType = 4;
     let firstKey = null, firstTime = null;
     const measures = [];
@@ -389,7 +405,8 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
           const lyEl = kids(c, 'lyric').find(l => (l.getAttribute('number') || '1') === '1') || kid(c, 'lyric');
           // Scanned scores give OCR noise such as '|', '丨' or '=' in lyrics; keep only real words.
           let lyric = lyEl ? kids(lyEl, 'text').map(t => t.textContent).join('').replace(/[|丨`=~^_\\]/g, '').trim() : '';
-          if (!/\p{L}/u.test(lyric)) lyric = '';
+          if (!/\p{L}/u.test(lyric) || /[(（]/.test(lyric)) lyric = '';
+          if (score && score.hanLyrics && !/\p{Script=Han}/u.test(lyric)) lyric = '';
           if (lyric) hasLyrics = true;
           meas.items.push({
             rest: isRest, pitch, jp: pitch && !isRest ? toJianpu(pitch, key) : null, q, pos, measRest,
@@ -408,7 +425,7 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
     const lens = new Map();
     for (const ms of measures) if (ms.len > 0) { const l = Math.round(ms.len * 8) / 8; lens.set(l, (lens.get(l) || 0) + 1); }
     const common = [...lens.entries()].sort((a, b) => b[1] - a[1])[0];
-    const usual = common ? common[0] : 4;
+    const usual = score && score.usualLen ? score.usualLen : (common ? common[0] : 4);
     let inferred = false;
     if (!firstTime) {
       inferred = true;
@@ -686,7 +703,7 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
   function render() {
     if (!state.score) return;
     const [kind, idx, staff, voice] = partSel.value.split('|');
-    const data = extract(sourceOf(state.score, kind, +idx), staff, voice);
+    const data = extract(sourceOf(state.score, kind, +idx), staff, voice, state.score);
     // Pick the octave that puts the most notes in the middle register (fewest dots).
     const octs = data.measures.flatMap(m => m.items.filter(it => it.jp).map(it => it.jp.oct));
     let auto = 0, bestCost = Infinity;
