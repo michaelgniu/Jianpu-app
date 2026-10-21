@@ -2,9 +2,12 @@ FROM --platform=linux/amd64 ubuntu:24.04
 
 ARG AUDIVERIS_VERSION=5.9.0
 ENV DEBIAN_FRONTEND=noninteractive
+# Audiveris reads lyrics and titles with Tesseract.
+ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl python3 python3-venv \
+      fontconfig fonts-dejavu-core tesseract-ocr-eng tesseract-ocr-chi-sim \
  && curl -fsSL -o /tmp/audiveris.deb \
       "https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/Audiveris-${AUDIVERIS_VERSION}-ubuntu24.04-x86_64.deb" \
  && mkdir -p /usr/share/desktop-directories /usr/share/applications /usr/share/mime/packages \
